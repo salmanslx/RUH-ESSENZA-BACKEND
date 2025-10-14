@@ -13,6 +13,7 @@ const app = express();
 // ---------------- MIDDLEWARE ----------------
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // ---------------- CLOUDINARY ----------------
 cloudinary.config({
@@ -25,17 +26,21 @@ cloudinary.config({
 const storage = new CloudinaryStorage({
   cloudinary,
   params: {
-    folder: "products", // Cloudinary folder
+    folder: "products", // Cloudinary folder name
     allowed_formats: ["jpg", "jpeg", "png"],
   },
 });
+
 const upload = multer({ storage });
 
 // ---------------- MONGODB ----------------
 mongoose
-  .connect(process.env.MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
-  .then(() => console.log("MongoDB connected"))
-  .catch((err) => console.error(err));
+  .connect(process.env.MONGO_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
+  })
+  .then(() => console.log("✅ MongoDB connected successfully"))
+  .catch((err) => console.error("❌ MongoDB connection error:", err));
 
 // ---------------- MODEL ----------------
 const productSchema = new mongoose.Schema(
@@ -49,7 +54,7 @@ const productSchema = new mongoose.Schema(
         size: String,
         price: Number,
         originalPrice: Number,
-        image: String, // optional variation-specific image
+        image: String,
       },
     ],
     images: [String], // Cloudinary URLs
@@ -92,7 +97,7 @@ app.post("/api/products", upload.array("images"), async (req, res) => {
     await newProduct.save();
     res.status(201).json(newProduct);
   } catch (err) {
-    console.error(err);
+    console.error("Error adding product:", err);
     res.status(500).json({ message: "Failed to add product" });
   }
 });
@@ -119,7 +124,7 @@ app.put("/api/products/:id", upload.array("images"), async (req, res) => {
     await product.save();
     res.json(product);
   } catch (err) {
-    console.error(err);
+    console.error("Error updating product:", err);
     res.status(500).json({ message: "Failed to update product" });
   }
 });
@@ -129,13 +134,20 @@ app.delete("/api/products/:id", async (req, res) => {
   try {
     const product = await Product.findByIdAndDelete(req.params.id);
     if (!product) return res.status(404).json({ message: "Product not found" });
-    res.json({ message: "Product deleted" });
+    res.json({ message: "Product deleted successfully" });
   } catch (err) {
-    console.error(err);
+    console.error("Error deleting product:", err);
     res.status(500).json({ message: "Failed to delete product" });
   }
 });
 
+// ---------------- ROOT TEST ROUTE ----------------
+app.get("/", (req, res) => {
+  res.send("✅ RUH ESSENZA Backend is running successfully!");
+});
+
 // ---------------- START SERVER ----------------
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, "0.0.0.0", () =>
+  console.log(`🚀 Server running on port ${PORT}`)
+);
