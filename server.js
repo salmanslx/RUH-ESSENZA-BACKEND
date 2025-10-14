@@ -11,7 +11,10 @@ dotenv.config();
 const app = express();
 
 // ---------------- MIDDLEWARE ----------------
-app.use(cors());
+// Only allow your frontend to access the backend
+app.use(cors({
+  origin: process.env.FRONTEND_URL,
+}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -26,26 +29,22 @@ cloudinary.config({
 const storage = new CloudinaryStorage({
   cloudinary,
   params: {
-    folder: "products", // Cloudinary folder name
+    folder: "products",
     allowed_formats: ["jpg", "jpeg", "png"],
   },
 });
-
 const upload = multer({ storage });
 
 // ---------------- MONGODB ----------------
 mongoose
-  .connect(process.env.MONGO_URI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-  })
+  .connect(process.env.MONGO_URI)
   .then(() => console.log("✅ MongoDB connected successfully"))
   .catch((err) => console.error("❌ MongoDB connection error:", err));
 
 // ---------------- MODEL ----------------
 const productSchema = new mongoose.Schema(
   {
-    name: String,
+    name: { type: String, required: true },
     category: String,
     description: String,
     type: { type: String, enum: ["featured", "combo"], default: "featured" },
@@ -54,10 +53,9 @@ const productSchema = new mongoose.Schema(
         size: String,
         price: Number,
         originalPrice: Number,
-        image: String,
       },
     ],
-    images: [String], // Cloudinary URLs
+    images: [String],
   },
   { timestamps: true }
 );
@@ -65,6 +63,11 @@ const productSchema = new mongoose.Schema(
 const Product = mongoose.model("Product", productSchema);
 
 // ---------------- ROUTES ----------------
+
+// Test root
+app.get("/", (req, res) => {
+  res.send("✅ RUH ESSENZA Backend is running successfully!");
+});
 
 // GET all products
 app.get("/api/products", async (req, res) => {
@@ -83,7 +86,7 @@ app.post("/api/products", upload.array("images"), async (req, res) => {
     const { name, category, description, type, variations } = req.body;
     const parsedVariations = JSON.parse(variations);
 
-    const images = req.files.map((f) => f.path); // Cloudinary URLs
+    const images = req.files.map((f) => f.path);
 
     const newProduct = new Product({
       name,
@@ -118,7 +121,7 @@ app.put("/api/products/:id", upload.array("images"), async (req, res) => {
     product.variations = parsedVariations;
 
     if (req.files.length > 0) {
-      product.images = req.files.map((f) => f.path); // update Cloudinary images
+      product.images = req.files.map((f) => f.path);
     }
 
     await product.save();
@@ -139,11 +142,6 @@ app.delete("/api/products/:id", async (req, res) => {
     console.error("Error deleting product:", err);
     res.status(500).json({ message: "Failed to delete product" });
   }
-});
-
-// ---------------- ROOT TEST ROUTE ----------------
-app.get("/", (req, res) => {
-  res.send("✅ RUH ESSENZA Backend is running successfully!");
 });
 
 // ---------------- START SERVER ----------------
