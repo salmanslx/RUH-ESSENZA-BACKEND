@@ -11,7 +11,16 @@ dotenv.config();
 const app = express();
 
 // ---------------- MIDDLEWARE ----------------
-app.use(cors());
+app.use(
+  cors({
+    origin: [
+      "https://ruhessenza.com",  // your live frontend (Hostinger)
+      "http://localhost:5173"    // for local dev
+    ],
+    methods: ["GET", "POST", "PUT", "DELETE"],
+    credentials: true,
+  })
+);
 app.use(express.json());
 
 // ---------------- CLOUDINARY ----------------
