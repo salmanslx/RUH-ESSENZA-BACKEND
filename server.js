@@ -14,13 +14,14 @@ const app = express();
 app.use(
   cors({
     origin: [
-      "https://ruhessenza.com",  // your live frontend (Hostinger)
-      "http://localhost:5173"    // for local dev
+      "http://localhost:8080",   // your local Vite dev server
+      "https://ruhessenza.com",  // your live site
     ],
     methods: ["GET", "POST", "PUT", "DELETE"],
     credentials: true,
   })
 );
+
 app.use(express.json());
 
 // ---------------- CLOUDINARY ----------------
