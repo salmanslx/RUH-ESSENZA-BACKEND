@@ -7,21 +7,16 @@ import { v2 as cloudinary } from "cloudinary";
 import { CloudinaryStorage } from "multer-storage-cloudinary";
 
 dotenv.config();
-
 const app = express();
 
 // ---------------- MIDDLEWARE ----------------
 app.use(
   cors({
-    origin: [
-      "http://localhost:8080",   // your local Vite dev server
-      "https://ruhessenza.com",  // your live site
-    ],
+    origin: ["http://localhost:8080", "https://ruhessenza.com"],
     methods: ["GET", "POST", "PUT", "DELETE"],
     credentials: true,
   })
 );
-
 app.use(express.json());
 
 // ---------------- CLOUDINARY ----------------
@@ -31,38 +26,45 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-// Multer storage for Cloudinary
+// ---------------- MULTER STORAGE ----------------
 const storage = new CloudinaryStorage({
   cloudinary,
   params: {
-    folder: "products", // folder in Cloudinary
-    allowed_formats: ["jpg", "jpeg", "png"],
+    folder: "products",
+    allowed_formats: ["jpg", "jpeg", "png", "webp"],
   },
 });
-
 const upload = multer({ storage });
 
 // ---------------- MONGODB ----------------
 mongoose
-  .connect(process.env.MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
-  .then(() => console.log("MongoDB connected"))
-  .catch((err) => console.error(err));
+  .connect(process.env.MONGO_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
+  })
+  .then(() => console.log("✅ MongoDB connected"))
+  .catch((err) => console.error("❌ MongoDB connection error:", err));
 
 // ---------------- MODEL ----------------
+const variationSchema = new mongoose.Schema(
+  {
+    size: String,
+    price: Number,
+    originalPrice: Number,
+    stock: { type: Number, default: 0 }, // <-- added stock
+    image: String, // Optional per-variation image
+  },
+  { _id: false }
+);
+
 const productSchema = new mongoose.Schema(
   {
     name: String,
     category: String,
     description: String,
     type: { type: String, enum: ["featured", "combo"], default: "featured" },
-    variations: [
-      {
-        size: String,
-        price: Number,
-        originalPrice: Number,
-      },
-    ],
-    images: [String], // Cloudinary URLs
+    variations: [variationSchema],
+    images: [String], // Product-level images
   },
   { timestamps: true }
 );
@@ -71,81 +73,151 @@ const Product = mongoose.model("Product", productSchema);
 
 // ---------------- ROUTES ----------------
 
-// GET all products
+// ✅ GET all products
 app.get("/api/products", async (req, res) => {
   try {
     const products = await Product.find();
     res.json(products);
   } catch (err) {
-    console.error(err);
+    console.error("Error fetching products:", err);
     res.status(500).json({ message: "Failed to fetch products" });
   }
 });
 
-// POST add product
-app.post("/api/products", upload.array("images"), async (req, res) => {
-  try {
-    const { name, category, description, type, variations } = req.body;
-    const parsedVariations = JSON.parse(variations);
+// ✅ POST - Add product
+app.post(
+  "/api/products",
+  upload.fields([
+    { name: "images" },
+    { name: "variationImages" },
+  ]),
+  async (req, res) => {
+    try {
+      const { name, category, description, type, variations, variationImageIndex } = req.body;
 
-    const images = req.files.map((f) => f.path); // Cloudinary URLs
+      let parsedVariations;
+      try {
+        parsedVariations = JSON.parse(variations);
+      } catch {
+        return res.status(400).json({ message: "Invalid variations JSON format" });
+      }
 
-    const newProduct = new Product({
-      name,
-      category,
-      description,
-      type,
-      variations: parsedVariations,
-      images,
-    });
+      // Product-level images
+      const images = (req.files["images"] || []).map((f) => f.path);
 
-    await newProduct.save();
-    res.status(201).json(newProduct);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "Failed to add product" });
-  }
-});
+      // Variation images
+      const variationImages = req.files["variationImages"] || [];
+      const indexes = Array.isArray(variationImageIndex)
+        ? variationImageIndex
+        : variationImageIndex
+        ? [variationImageIndex]
+        : [];
 
-// PUT update product
-app.put("/api/products/:id", upload.array("images"), async (req, res) => {
-  try {
-    const { name, category, description, type, variations } = req.body;
-    const parsedVariations = JSON.parse(variations);
+      indexes.forEach((idx, i) => {
+        const index = Number(idx);
+        if (parsedVariations[index]) {
+          parsedVariations[index].image = variationImages[i]?.path || "";
+        }
+      });
 
-    const product = await Product.findById(req.params.id);
-    if (!product) return res.status(404).json({ message: "Product not found" });
+      // Ensure stock field exists
+      parsedVariations = parsedVariations.map((v) => ({
+  ...v,
+  stock: v.stock || 0,
+}));
 
-    product.name = name;
-    product.category = category;
-    product.description = description;
-    product.type = type;
-    product.variations = parsedVariations;
+      const newProduct = new Product({
+        name,
+        category,
+        description,
+        type,
+        variations: parsedVariations,
+        images,
+      });
 
-    if (req.files.length > 0) {
-      product.images = req.files.map((f) => f.path);
+      await newProduct.save();
+      res.status(201).json(newProduct);
+    } catch (err) {
+      console.error("Error saving product:", err);
+      res.status(500).json({ message: "Failed to add product" });
     }
-
-    await product.save();
-    res.json(product);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "Failed to update product" });
   }
-});
+);
 
-// DELETE product
+// ✅ PUT - Update product
+app.put(
+  "/api/products/:id",
+  upload.fields([
+    { name: "images" },
+    { name: "variationImages" },
+  ]),
+  async (req, res) => {
+    try {
+      const { name, category, description, type, variations, variationImageIndex } = req.body;
+
+      let parsedVariations;
+      try {
+        parsedVariations = JSON.parse(variations);
+      } catch {
+        return res.status(400).json({ message: "Invalid variations JSON format" });
+      }
+
+      const product = await Product.findById(req.params.id);
+      if (!product) return res.status(404).json({ message: "Product not found" });
+
+      const newImages = (req.files["images"] || []).map((f) => f.path);
+      const variationImages = req.files["variationImages"] || [];
+      const indexes = Array.isArray(variationImageIndex)
+        ? variationImageIndex
+        : variationImageIndex
+        ? [variationImageIndex]
+        : [];
+
+      // Merge variation images
+      indexes.forEach((idx, i) => {
+        const index = Number(idx);
+        if (parsedVariations[index]) {
+          parsedVariations[index].image = variationImages[i]?.path || "";
+        }
+      });
+
+      // Keep existing variation images if no new upload
+      parsedVariations.forEach((v, i) => {
+        if (!v.image && product.variations[i]?.image) {
+          v.image = product.variations[i].image;
+        }
+        // Ensure stock field
+        if (v.stock === undefined) v.stock = product.variations[i]?.stock || 0;
+      });
+
+      product.name = name;
+      product.category = category;
+      product.description = description;
+      product.type = type;
+      product.variations = parsedVariations;
+      if (newImages.length > 0) product.images = newImages;
+
+      await product.save();
+      res.json(product);
+    } catch (err) {
+      console.error("Error updating product:", err);
+      res.status(500).json({ message: "Failed to update product" });
+    }
+  }
+);
+
+// ✅ DELETE - Remove product
 app.delete("/api/products/:id", async (req, res) => {
   try {
-    const product = await Product.findByIdAndDelete(req.params.id);
-    if (!product) return res.status(404).json({ message: "Product not found" });
-    res.json({ message: "Product deleted" });
+    const deleted = await Product.findByIdAndDelete(req.params.id);
+    if (!deleted) return res.status(404).json({ message: "Product not found" });
+    res.json({ message: "Product deleted successfully" });
   } catch (err) {
-    console.error(err);
+    console.error("Error deleting product:", err);
     res.status(500).json({ message: "Failed to delete product" });
   }
 });
 
 // ---------------- START SERVER ----------------
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
