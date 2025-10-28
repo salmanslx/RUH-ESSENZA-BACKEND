@@ -51,8 +51,8 @@ const variationSchema = new mongoose.Schema(
     size: String,
     price: Number,
     originalPrice: Number,
-    stock: { type: Number, default: 0 }, // <-- added stock
-    image: String, // Optional per-variation image
+    stock: { type: Number, default: 0 },
+    image: String,
   },
   { _id: false }
 );
@@ -64,7 +64,7 @@ const productSchema = new mongoose.Schema(
     description: String,
     type: { type: String, enum: ["featured", "combo"], default: "featured" },
     variations: [variationSchema],
-    images: [String], // Product-level images
+    images: [String],
   },
   { timestamps: true }
 );
@@ -84,7 +84,7 @@ app.get("/api/products", async (req, res) => {
   }
 });
 
-// ✅ POST - Add product
+// ✅ POST - Add Product
 app.post(
   "/api/products",
   upload.fields([
@@ -93,7 +93,14 @@ app.post(
   ]),
   async (req, res) => {
     try {
-      const { name, category, description, type, variations, variationImageIndex } = req.body;
+      const {
+        name,
+        category,
+        description,
+        type,
+        variations,
+        variationImageIndex,
+      } = req.body;
 
       let parsedVariations;
       try {
@@ -120,11 +127,11 @@ app.post(
         }
       });
 
-      // Ensure stock field exists
+      // Ensure stock exists
       parsedVariations = parsedVariations.map((v) => ({
-  ...v,
-  stock: v.stock || 0,
-}));
+        ...v,
+        stock: v.stock ?? 0,
+      }));
 
       const newProduct = new Product({
         name,
@@ -144,7 +151,7 @@ app.post(
   }
 );
 
-// ✅ PUT - Update product
+// ✅ PUT - Update Product
 app.put(
   "/api/products/:id",
   upload.fields([
@@ -153,7 +160,14 @@ app.put(
   ]),
   async (req, res) => {
     try {
-      const { name, category, description, type, variations, variationImageIndex } = req.body;
+      const {
+        name,
+        category,
+        description,
+        type,
+        variations,
+        variationImageIndex,
+      } = req.body;
 
       let parsedVariations;
       try {
@@ -163,7 +177,8 @@ app.put(
       }
 
       const product = await Product.findById(req.params.id);
-      if (!product) return res.status(404).json({ message: "Product not found" });
+      if (!product)
+        return res.status(404).json({ message: "Product not found" });
 
       const newImages = (req.files["images"] || []).map((f) => f.path);
       const variationImages = req.files["variationImages"] || [];
@@ -181,20 +196,25 @@ app.put(
         }
       });
 
-      // Keep existing variation images if no new upload
-      parsedVariations.forEach((v, i) => {
-        if (!v.image && product.variations[i]?.image) {
-          v.image = product.variations[i].image;
-        }
-        // Ensure stock field
-        if (v.stock === undefined) v.stock = product.variations[i]?.stock || 0;
-      });
+      // Preserve existing images and stock
+      parsedVariations = parsedVariations.map((v, i) => ({
+        ...v,
+        image:
+          v.image ||
+          (product.variations[i] ? product.variations[i].image : ""),
+        stock:
+          v.stock !== undefined
+            ? v.stock
+            : product.variations[i]?.stock || 0,
+      }));
 
       product.name = name;
       product.category = category;
       product.description = description;
       product.type = type;
       product.variations = parsedVariations;
+
+      // Only replace product images if new ones uploaded
       if (newImages.length > 0) product.images = newImages;
 
       await product.save();
@@ -206,7 +226,7 @@ app.put(
   }
 );
 
-// ✅ DELETE - Remove product
+// ✅ DELETE - Remove Product
 app.delete("/api/products/:id", async (req, res) => {
   try {
     const deleted = await Product.findByIdAndDelete(req.params.id);
