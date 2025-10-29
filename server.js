@@ -12,7 +12,7 @@ const app = express();
 // ---------------- MIDDLEWARE ----------------
 app.use(
   cors({
-    origin: ["http://localhost:8080", "https://ruhessenza.com"],
+    origin: ["http://localhost:8080", "https://ruhessenza.com", "https://www.ruhessenza.com"],
     methods: ["GET", "POST", "PUT", "DELETE"],
     credentials: true,
   })
