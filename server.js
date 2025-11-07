@@ -12,7 +12,11 @@ const app = express();
 // ---------------- MIDDLEWARE ----------------
 app.use(
   cors({
-    origin: ["http://localhost:8080", "https://ruhessenza.com", "https://www.ruhessenza.com"],
+    origin: [
+      "http://localhost:8080",
+      "https://ruhessenza.com",
+      "https://www.ruhessenza.com",
+    ],
     methods: ["GET", "POST", "PUT", "DELETE"],
     credentials: true,
   })
@@ -106,7 +110,9 @@ app.post(
       try {
         parsedVariations = JSON.parse(variations);
       } catch {
-        return res.status(400).json({ message: "Invalid variations JSON format" });
+        return res
+          .status(400)
+          .json({ message: "Invalid variations JSON format" });
       }
 
       // Product-level images
@@ -151,7 +157,7 @@ app.post(
   }
 );
 
-// ✅ PUT - Update Product
+// ✅ PUT - Update Product (with Cloudinary cleanup)
 app.put(
   "/api/products/:id",
   upload.fields([
@@ -167,20 +173,54 @@ app.put(
         type,
         variations,
         variationImageIndex,
+        existingImages, // <-- received from frontend
       } = req.body;
 
+      // Parse variations safely
       let parsedVariations;
       try {
         parsedVariations = JSON.parse(variations);
       } catch {
-        return res.status(400).json({ message: "Invalid variations JSON format" });
+        return res
+          .status(400)
+          .json({ message: "Invalid variations JSON format" });
       }
 
       const product = await Product.findById(req.params.id);
       if (!product)
         return res.status(404).json({ message: "Product not found" });
 
+      // Handle product-level images
       const newImages = (req.files["images"] || []).map((f) => f.path);
+
+      // ✅ Keep old images if provided
+      let keptImages = [];
+      try {
+        keptImages = existingImages ? JSON.parse(existingImages) : [];
+      } catch {
+        keptImages = [];
+      }
+
+      // ✅ Identify deleted images (those not kept)
+      const deletedImages = product.images.filter((img) => !keptImages.includes(img));
+
+      // 🔥 Delete them from Cloudinary
+      for (const url of deletedImages) {
+        const parts = url.split("/upload/");
+        if (parts.length > 1) {
+          const publicIdWithExt = parts[1].split(".")[0]; // e.g. "products/abc123"
+          try {
+            await cloudinary.uploader.destroy(publicIdWithExt);
+          } catch (err) {
+            console.warn("⚠️ Failed to delete Cloudinary image:", publicIdWithExt);
+          }
+        }
+      }
+
+      // ✅ Merge old + new
+      product.images = [...keptImages, ...newImages];
+
+      // Handle variation images
       const variationImages = req.files["variationImages"] || [];
       const indexes = Array.isArray(variationImageIndex)
         ? variationImageIndex
@@ -188,7 +228,6 @@ app.put(
         ? [variationImageIndex]
         : [];
 
-      // Merge variation images
       indexes.forEach((idx, i) => {
         const index = Number(idx);
         if (parsedVariations[index]) {
@@ -196,26 +235,19 @@ app.put(
         }
       });
 
-      // Preserve existing images and stock
+      // Preserve existing variation images and stock if not changed
       parsedVariations = parsedVariations.map((v, i) => ({
         ...v,
-        image:
-          v.image ||
-          (product.variations[i] ? product.variations[i].image : ""),
-        stock:
-          v.stock !== undefined
-            ? v.stock
-            : product.variations[i]?.stock || 0,
+        image: v.image || (product.variations[i]?.image || ""),
+        stock: v.stock ?? product.variations[i]?.stock ?? 0,
       }));
 
+      // Update product fields
       product.name = name;
       product.category = category;
       product.description = description;
       product.type = type;
       product.variations = parsedVariations;
-
-      // Only replace product images if new ones uploaded
-      if (newImages.length > 0) product.images = newImages;
 
       await product.save();
       res.json(product);
@@ -226,11 +258,40 @@ app.put(
   }
 );
 
-// ✅ DELETE - Remove Product
+// ✅ DELETE - Remove Product (and delete from Cloudinary)
 app.delete("/api/products/:id", async (req, res) => {
   try {
     const deleted = await Product.findByIdAndDelete(req.params.id);
     if (!deleted) return res.status(404).json({ message: "Product not found" });
+
+    // 🔥 Delete all images from Cloudinary
+    for (const url of deleted.images) {
+      const parts = url.split("/upload/");
+      if (parts.length > 1) {
+        const publicIdWithExt = parts[1].split(".")[0];
+        try {
+          await cloudinary.uploader.destroy(publicIdWithExt);
+        } catch (err) {
+          console.warn("⚠️ Failed to delete Cloudinary image:", publicIdWithExt);
+        }
+      }
+    }
+
+    // 🔥 Delete variation images
+    for (const variation of deleted.variations) {
+      if (variation.image) {
+        const parts = variation.image.split("/upload/");
+        if (parts.length > 1) {
+          const publicIdWithExt = parts[1].split(".")[0];
+          try {
+            await cloudinary.uploader.destroy(publicIdWithExt);
+          } catch (err) {
+            console.warn("⚠️ Failed to delete Cloudinary variation image:", publicIdWithExt);
+          }
+        }
+      }
+    }
+
     res.json({ message: "Product deleted successfully" });
   } catch (err) {
     console.error("Error deleting product:", err);
