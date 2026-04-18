@@ -9,18 +9,19 @@ import { CloudinaryStorage } from "multer-storage-cloudinary";
 dotenv.config();
 const app = express();
 
-// ---------------- MIDDLEWARE ----------------
+// ---------------- CORS FIX ----------------
 app.use(
   cors({
-    origin: [
-      "http://localhost:8080",
-      "https://ruhessenza.com",
-      "https://www.ruhessenza.com",
-    ],
+    origin: true, // allow all origins (fixes your issue)
     methods: ["GET", "POST", "PUT", "DELETE"],
     credentials: true,
   })
 );
+
+// handle preflight requests
+app.options("*", cors());
+
+// ---------------- MIDDLEWARE ----------------
 app.use(express.json());
 
 // ---------------- CLOUDINARY ----------------
@@ -42,10 +43,7 @@ const upload = multer({ storage });
 
 // ---------------- MONGODB ----------------
 mongoose
-  .connect(process.env.MONGO_URI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-  })
+  .connect(process.env.MONGO_URI)
   .then(() => console.log("✅ MongoDB connected"))
   .catch((err) => console.error("❌ MongoDB connection error:", err));
 
@@ -76,6 +74,11 @@ const productSchema = new mongoose.Schema(
 const Product = mongoose.model("Product", productSchema);
 
 // ---------------- ROUTES ----------------
+
+// Root check (important for Render)
+app.get("/", (req, res) => {
+  res.send("API is running 🚀");
+});
 
 // ✅ GET all products
 app.get("/api/products", async (req, res) => {
@@ -110,15 +113,11 @@ app.post(
       try {
         parsedVariations = JSON.parse(variations);
       } catch {
-        return res
-          .status(400)
-          .json({ message: "Invalid variations JSON format" });
+        return res.status(400).json({ message: "Invalid variations JSON format" });
       }
 
-      // Product-level images
       const images = (req.files["images"] || []).map((f) => f.path);
 
-      // Variation images
       const variationImages = req.files["variationImages"] || [];
       const indexes = Array.isArray(variationImageIndex)
         ? variationImageIndex
@@ -133,7 +132,6 @@ app.post(
         }
       });
 
-      // Ensure stock exists
       parsedVariations = parsedVariations.map((v) => ({
         ...v,
         stock: v.stock ?? 0,
@@ -157,7 +155,7 @@ app.post(
   }
 );
 
-// ✅ PUT - Update Product (with Cloudinary cleanup)
+// ✅ PUT - Update Product
 app.put(
   "/api/products/:id",
   upload.fields([
@@ -173,54 +171,38 @@ app.put(
         type,
         variations,
         variationImageIndex,
-        existingImages, // <-- received from frontend
+        existingImages,
       } = req.body;
 
-      // Parse variations safely
       let parsedVariations;
       try {
         parsedVariations = JSON.parse(variations);
       } catch {
-        return res
-          .status(400)
-          .json({ message: "Invalid variations JSON format" });
+        return res.status(400).json({ message: "Invalid variations JSON format" });
       }
 
       const product = await Product.findById(req.params.id);
-      if (!product)
-        return res.status(404).json({ message: "Product not found" });
+      if (!product) return res.status(404).json({ message: "Product not found" });
 
-      // Handle product-level images
       const newImages = (req.files["images"] || []).map((f) => f.path);
 
-      // ✅ Keep old images if provided
       let keptImages = [];
       try {
         keptImages = existingImages ? JSON.parse(existingImages) : [];
-      } catch {
-        keptImages = [];
-      }
+      } catch {}
 
-      // ✅ Identify deleted images (those not kept)
       const deletedImages = product.images.filter((img) => !keptImages.includes(img));
 
-      // 🔥 Delete them from Cloudinary
       for (const url of deletedImages) {
         const parts = url.split("/upload/");
         if (parts.length > 1) {
-          const publicIdWithExt = parts[1].split(".")[0]; // e.g. "products/abc123"
-          try {
-            await cloudinary.uploader.destroy(publicIdWithExt);
-          } catch (err) {
-            console.warn("⚠️ Failed to delete Cloudinary image:", publicIdWithExt);
-          }
+          const publicId = parts[1].split(".")[0];
+          await cloudinary.uploader.destroy(publicId).catch(() => {});
         }
       }
 
-      // ✅ Merge old + new
       product.images = [...keptImages, ...newImages];
 
-      // Handle variation images
       const variationImages = req.files["variationImages"] || [];
       const indexes = Array.isArray(variationImageIndex)
         ? variationImageIndex
@@ -235,14 +217,12 @@ app.put(
         }
       });
 
-      // Preserve existing variation images and stock if not changed
       parsedVariations = parsedVariations.map((v, i) => ({
         ...v,
-        image: v.image || (product.variations[i]?.image || ""),
+        image: v.image || product.variations[i]?.image || "",
         stock: v.stock ?? product.variations[i]?.stock ?? 0,
       }));
 
-      // Update product fields
       product.name = name;
       product.category = category;
       product.description = description;
@@ -258,36 +238,26 @@ app.put(
   }
 );
 
-// ✅ DELETE - Remove Product (and delete from Cloudinary)
+// ✅ DELETE - Remove Product
 app.delete("/api/products/:id", async (req, res) => {
   try {
     const deleted = await Product.findByIdAndDelete(req.params.id);
     if (!deleted) return res.status(404).json({ message: "Product not found" });
 
-    // 🔥 Delete all images from Cloudinary
     for (const url of deleted.images) {
       const parts = url.split("/upload/");
       if (parts.length > 1) {
-        const publicIdWithExt = parts[1].split(".")[0];
-        try {
-          await cloudinary.uploader.destroy(publicIdWithExt);
-        } catch (err) {
-          console.warn("⚠️ Failed to delete Cloudinary image:", publicIdWithExt);
-        }
+        const publicId = parts[1].split(".")[0];
+        await cloudinary.uploader.destroy(publicId).catch(() => {});
       }
     }
 
-    // 🔥 Delete variation images
-    for (const variation of deleted.variations) {
-      if (variation.image) {
-        const parts = variation.image.split("/upload/");
+    for (const v of deleted.variations) {
+      if (v.image) {
+        const parts = v.image.split("/upload/");
         if (parts.length > 1) {
-          const publicIdWithExt = parts[1].split(".")[0];
-          try {
-            await cloudinary.uploader.destroy(publicIdWithExt);
-          } catch (err) {
-            console.warn("⚠️ Failed to delete Cloudinary variation image:", publicIdWithExt);
-          }
+          const publicId = parts[1].split(".")[0];
+          await cloudinary.uploader.destroy(publicId).catch(() => {});
         }
       }
     }
