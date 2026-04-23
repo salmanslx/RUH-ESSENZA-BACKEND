@@ -9,27 +9,16 @@ import { CloudinaryStorage } from "multer-storage-cloudinary";
 dotenv.config();
 const app = express();
 
-// ---------------- ✅ CORS FIX ----------------
-const allowedOrigins = [
-  "http://localhost:5000",
-  "https://ruhessenza.com"
-];
+// ---------------- CORS FIX ----------------
+app.use(
+  cors({
+    origin: true, // allow all origins (fixes your issue)
+    methods: ["GET", "POST", "PUT", "DELETE"],
+    credentials: true,
+  })
+);
 
-app.use(cors({
-  origin: function (origin, callback) {
-    // allow requests with no origin (like Postman)
-    if (!origin) return callback(null, true);
-
-    if (allowedOrigins.includes(origin)) {
-      return callback(null, true);
-    } else {
-      return callback(new Error("CORS not allowed"));
-    }
-  },
-  methods: ["GET", "POST", "PUT", "DELETE"],
-  credentials: true,
-}));
-
+// handle preflight requests
 app.options("*", cors());
 
 // ---------------- MIDDLEWARE ----------------
@@ -56,7 +45,7 @@ const upload = multer({ storage });
 mongoose
   .connect(process.env.MONGO_URI)
   .then(() => console.log("✅ MongoDB connected"))
-  .catch((err) => console.error("❌ MongoDB error:", err));
+  .catch((err) => console.error("❌ MongoDB connection error:", err));
 
 // ---------------- MODEL ----------------
 const variationSchema = new mongoose.Schema(
@@ -86,28 +75,23 @@ const Product = mongoose.model("Product", productSchema);
 
 // ---------------- ROUTES ----------------
 
-// ✅ ROOT
+// Root check (important for Render)
 app.get("/", (req, res) => {
-  res.send("🚀 API is running");
+  res.send("API is running 🚀");
 });
 
-// ✅ DEBUG ROUTE (VERY IMPORTANT)
-app.get("/test", (req, res) => {
-  res.send("✅ TEST WORKING");
-});
-
-// ✅ GET PRODUCTS
+// ✅ GET all products
 app.get("/api/products", async (req, res) => {
   try {
     const products = await Product.find();
     res.json(products);
   } catch (err) {
-    console.error("❌ Fetch error:", err);
+    console.error("Error fetching products:", err);
     res.status(500).json({ message: "Failed to fetch products" });
   }
 });
 
-// ✅ ADD PRODUCT
+// ✅ POST - Add Product
 app.post(
   "/api/products",
   upload.fields([
@@ -125,11 +109,16 @@ app.post(
         variationImageIndex,
       } = req.body;
 
-      let parsedVariations = JSON.parse(variations);
+      let parsedVariations;
+      try {
+        parsedVariations = JSON.parse(variations);
+      } catch {
+        return res.status(400).json({ message: "Invalid variations JSON format" });
+      }
 
-      const images = (req.files["images"] || []).map(f => f.path);
+      const images = (req.files["images"] || []).map((f) => f.path);
+
       const variationImages = req.files["variationImages"] || [];
-
       const indexes = Array.isArray(variationImageIndex)
         ? variationImageIndex
         : variationImageIndex
@@ -137,10 +126,16 @@ app.post(
         : [];
 
       indexes.forEach((idx, i) => {
-        if (parsedVariations[idx]) {
-          parsedVariations[idx].image = variationImages[i]?.path || "";
+        const index = Number(idx);
+        if (parsedVariations[index]) {
+          parsedVariations[index].image = variationImages[i]?.path || "";
         }
       });
+
+      parsedVariations = parsedVariations.map((v) => ({
+        ...v,
+        stock: v.stock ?? 0,
+      }));
 
       const newProduct = new Product({
         name,
@@ -153,15 +148,14 @@ app.post(
 
       await newProduct.save();
       res.status(201).json(newProduct);
-
     } catch (err) {
-      console.error("❌ Save error:", err);
+      console.error("Error saving product:", err);
       res.status(500).json({ message: "Failed to add product" });
     }
   }
 );
 
-// ✅ UPDATE PRODUCT
+// ✅ PUT - Update Product
 app.put(
   "/api/products/:id",
   upload.fields([
@@ -176,49 +170,105 @@ app.put(
         description,
         type,
         variations,
+        variationImageIndex,
+        existingImages,
       } = req.body;
 
-      const parsedVariations = JSON.parse(variations);
+      let parsedVariations;
+      try {
+        parsedVariations = JSON.parse(variations);
+      } catch {
+        return res.status(400).json({ message: "Invalid variations JSON format" });
+      }
 
       const product = await Product.findById(req.params.id);
-      if (!product) return res.status(404).json({ message: "Not found" });
+      if (!product) return res.status(404).json({ message: "Product not found" });
 
-      const newImages = (req.files["images"] || []).map(f => f.path);
+      const newImages = (req.files["images"] || []).map((f) => f.path);
+
+      let keptImages = [];
+      try {
+        keptImages = existingImages ? JSON.parse(existingImages) : [];
+      } catch {}
+
+      const deletedImages = product.images.filter((img) => !keptImages.includes(img));
+
+      for (const url of deletedImages) {
+        const parts = url.split("/upload/");
+        if (parts.length > 1) {
+          const publicId = parts[1].split(".")[0];
+          await cloudinary.uploader.destroy(publicId).catch(() => {});
+        }
+      }
+
+      product.images = [...keptImages, ...newImages];
+
+      const variationImages = req.files["variationImages"] || [];
+      const indexes = Array.isArray(variationImageIndex)
+        ? variationImageIndex
+        : variationImageIndex
+        ? [variationImageIndex]
+        : [];
+
+      indexes.forEach((idx, i) => {
+        const index = Number(idx);
+        if (parsedVariations[index]) {
+          parsedVariations[index].image = variationImages[i]?.path || "";
+        }
+      });
+
+      parsedVariations = parsedVariations.map((v, i) => ({
+        ...v,
+        image: v.image || product.variations[i]?.image || "",
+        stock: v.stock ?? product.variations[i]?.stock ?? 0,
+      }));
 
       product.name = name;
       product.category = category;
       product.description = description;
       product.type = type;
       product.variations = parsedVariations;
-      product.images = [...product.images, ...newImages];
 
       await product.save();
       res.json(product);
-
     } catch (err) {
-      console.error("❌ Update error:", err);
-      res.status(500).json({ message: "Failed to update" });
+      console.error("Error updating product:", err);
+      res.status(500).json({ message: "Failed to update product" });
     }
   }
 );
 
-// ✅ DELETE PRODUCT
+// ✅ DELETE - Remove Product
 app.delete("/api/products/:id", async (req, res) => {
   try {
     const deleted = await Product.findByIdAndDelete(req.params.id);
-    if (!deleted) return res.status(404).json({ message: "Not found" });
+    if (!deleted) return res.status(404).json({ message: "Product not found" });
 
-    res.json({ message: "Deleted successfully" });
+    for (const url of deleted.images) {
+      const parts = url.split("/upload/");
+      if (parts.length > 1) {
+        const publicId = parts[1].split(".")[0];
+        await cloudinary.uploader.destroy(publicId).catch(() => {});
+      }
+    }
 
+    for (const v of deleted.variations) {
+      if (v.image) {
+        const parts = v.image.split("/upload/");
+        if (parts.length > 1) {
+          const publicId = parts[1].split(".")[0];
+          await cloudinary.uploader.destroy(publicId).catch(() => {});
+        }
+      }
+    }
+
+    res.json({ message: "Product deleted successfully" });
   } catch (err) {
-    console.error("❌ Delete error:", err);
-    res.status(500).json({ message: "Failed to delete" });
+    console.error("Error deleting product:", err);
+    res.status(500).json({ message: "Failed to delete product" });
   }
 });
 
 // ---------------- START SERVER ----------------
 const PORT = process.env.PORT || 5000;
-
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
